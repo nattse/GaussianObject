@@ -1,148 +1,0 @@
-run_name name set to test
-project set to frame125_onlygopros
-sparsity set to 4
-resolution set to 4
-Enabling overwriting...
-New project name: test-frame125_onlygopros
-Checking for previously existing runs with the same name...
-test-frame125_onlygopros already found in data/natedata
-Overwrite check completed
-Creating a copy of frame125_onlygopros at /home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros
-/home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/sparse/.DS_Store
-/home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/.DS_Store
-
-
-Main functions starting at 
-08:14:52
-
-downsample
------------------------------
-
-preprocessing
-img_size [384, 512]
-Params passed to Resize transform:
-	width:  512
-	height:  384
-	resize_target:  True
-	keep_aspect_ratio:  True
-	ensure_multiple_of:  32
-	resize_method:  minimal
------------------------------
-
-visual
-Using resized images in /home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/images_4...
-Reading camera 1/8Reading camera 2/8Reading camera 3/8Reading camera 4/8Reading camera 5/8Reading camera 6/8Reading camera 7/8Reading camera 8/8
-Generating ellipse path from 8 camera infos ...
-theta[0] 0.0
-Converting point3d.bin to .ply, will happen only the first time you open the scene.
-the sparse id is 4, with 4 frames
-the camera center is: tensor([  0.2266,   0.6659, -17.7874], device='cuda:0')
-visual hull is Okay, with 0 points
-[1;33m[Open3D WARNING] The number of points is 0 when creating axis-aligned bounding box.[0;m
-visual hull is Okay, with 0 points
-[1;33m[Open3D WARNING] The number of points is 0 when creating axis-aligned bounding box.[0;m
-[1;33m[Open3D WARNING] Write PLY failed: point cloud has 0 points.[0;m
------------------------------
-
-first_train
-Optimizing output/gs_init/test-frame125_onlygopros
-Listening on 127.0.0.1:7007 [03/07 08:15:07]
-Output folder: output/gs_init/test-frame125_onlygopros [03/07 08:15:07]
-Using resized images in /home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/images_4... [03/07 08:15:07]
-Reading camera 1/8Reading camera 2/8Reading camera 3/8Reading camera 4/8Reading camera 5/8Reading camera 6/8Reading camera 7/8Reading camera 8/8 [03/07 08:15:07]
-Generating ellipse path from 8 camera infos ... [03/07 08:15:07]
-theta[0] 0.0 [03/07 08:15:07]
-Sparse view, only 4 images are used for training, others are used for eval. [03/07 08:15:07]
------------------------------
-
-first_render
-Looking for config file in output/gs_init/test-frame125_onlygopros/cfg_args
-Config file found: output/gs_init/test-frame125_onlygopros/cfg_args
-Rendering output/gs_init/test-frame125_onlygopros
-Setting up [LPIPS] perceptual loss: trunk [vgg], v[0.1], spatial [off]
-Loading model from: /home/leelab/anaconda3/envs/gaussObj/lib/python3.11/site-packages/lpips/weights/v0.1/vgg.pth
------------------------------
-
-first_render_cont
-Looking for config file in output/gs_init/test-frame125_onlygopros/cfg_args
-Config file found: output/gs_init/test-frame125_onlygopros/cfg_args
-Rendering output/gs_init/test-frame125_onlygopros
-Setting up [LPIPS] perceptual loss: trunk [vgg], v[0.1], spatial [off]
-Loading model from: /home/leelab/anaconda3/envs/gaussObj/lib/python3.11/site-packages/lpips/weights/v0.1/vgg.pth
------------------------------
-
-loo1
-Optimizing output/gs_init/test-frame125_onlygopros_loo
-Output folder: output/gs_init/test-frame125_onlygopros_loo/leave_4 [03/07 08:15:15]
-Using resized images in /home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/images_4... [03/07 08:15:15]
-Reading camera 1/8Reading camera 2/8Reading camera 3/8Reading camera 4/8Reading camera 5/8Reading camera 6/8Reading camera 7/8Reading camera 8/8 [03/07 08:15:15]
-Generating ellipse path from 8 camera infos ... [03/07 08:15:15]
-theta[0] 0.0 [03/07 08:15:15]
-Sparse view, only 4 images are used for training, others are used for eval. [03/07 08:15:15]
------------------------------
-
-loo2
-Optimizing output/gs_init/test-frame125_onlygopros_loo
-Output folder: output/gs_init/test-frame125_onlygopros_loo/leave_4 [03/07 08:15:18]
-Using resized images in /home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/images_4... [03/07 08:15:18]
-Reading camera 1/8Reading camera 2/8Reading camera 3/8Reading camera 4/8Reading camera 5/8Reading camera 6/8Reading camera 7/8Reading camera 8/8 [03/07 08:15:18]
-Generating ellipse path from 8 camera infos ... [03/07 08:15:18]
-theta[0] 0.0 [03/07 08:15:18]
-Sparse view, only 4 images are used for training, others are used for eval. [03/07 08:15:19]
------------------------------
-
-lora
-No module 'xformers'. Proceeding without it.
-ControlLDM: Running in eps-prediction mode
-DiffusionWrapper has 859.52 M params.
-making attention of type 'vanilla' with 512 in_channels
-Working with z of shape (1, 4, 32, 32) = 4096 dimensions.
-making attention of type 'vanilla' with 512 in_channels
-Loaded model config from [./models/control_v11f1e_sd15_tile.yaml]
-Loaded state_dict from [./models/v1-5-pruned.ckpt]
-Loaded state_dict from [./models/control_v11f1e_sd15_tile.pth]
------------------------------
-
-repair_train
------------------------------
-
-final_render
-Looking for config file in output/gs_init/test-frame125_onlygopros/cfg_args
-Config file found: output/gs_init/test-frame125_onlygopros/cfg_args
-Rendering output/gs_init/test-frame125_onlygopros
-Setting up [LPIPS] perceptual loss: trunk [vgg], v[0.1], spatial [off]
-Loading model from: /home/leelab/anaconda3/envs/gaussObj/lib/python3.11/site-packages/lpips/weights/v0.1/vgg.pth
-Using resized images in /home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/images_4... [03/07 08:15:38]
-Reading camera 1/8Reading camera 2/8Reading camera 3/8Reading camera 4/8Reading camera 5/8Reading camera 6/8Reading camera 7/8Reading camera 8/8 [03/07 08:15:38]
-Generating ellipse path from 8 camera infos ... [03/07 08:15:38]
-theta[0] 0.0 [03/07 08:15:38]
-Sparse view, only 4 images are used for training, others are used for eval. [03/07 08:15:38]
------------------------------
-
-final_render_cont
-Looking for config file in output/gs_init/test-frame125_onlygopros/cfg_args
-Config file found: output/gs_init/test-frame125_onlygopros/cfg_args
-Rendering output/gs_init/test-frame125_onlygopros
-Setting up [LPIPS] perceptual loss: trunk [vgg], v[0.1], spatial [off]
-Loading model from: /home/leelab/anaconda3/envs/gaussObj/lib/python3.11/site-packages/lpips/weights/v0.1/vgg.pth
-Using resized images in /home/leelab/Desktop/GaussianObject/data/natedata/test-frame125_onlygopros/images_4... [03/07 08:15:41]
-Reading camera 1/8Reading camera 2/8Reading camera 3/8Reading camera 4/8Reading camera 5/8Reading camera 6/8Reading camera 7/8Reading camera 8/8 [03/07 08:15:41]
-Generating ellipse path from 8 camera infos ... [03/07 08:15:41]
-theta[0] 0.0 [03/07 08:15:41]
-Sparse view, only 4 images are used for training, others are used for eval. [03/07 08:15:41]
------------------------------
-Main functions ending at
-08:15:41
-===== Summary of Runtimes =====
-downsample: .372634824 seconds
-preprocessing: 8.695002743 seconds
-visual: 3.348776452 seconds
-first_train: 3.206228107 seconds
-first_render: 2.712728771 seconds
-first_render_cont: 2.680708021 seconds
-loo1: 3.057379749 seconds
-loo2: 3.041321973 seconds
-lora: 12.079255584 seconds
-repair_train: 4.228430582 seconds
-final_render: 2.888378330 seconds
-final_render_cont: 2.820257463 seconds
