@@ -179,7 +179,12 @@ if __name__ == "__main__":
         action="store_true",
         help="whether to enable dynamic type checking",
     )
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
 
     args, extras = parser.parse_known_args()
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
 
     main(args, extras)

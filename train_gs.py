@@ -30,6 +30,7 @@ from utils.image_utils import psnr
 from utils.loss_utils import l1_loss, ssim, monodisp
 from utils.pose_utils import update_pose, get_loss_tracking
 from torch.utils.tensorboard.writer import SummaryWriter
+
 TENSORBOARD_FOUND = True
 
 def training(args, dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
@@ -40,13 +41,13 @@ def training(args, dataset, opt, pipe, testing_iterations, saving_iterations, ch
         from gaussian_renderer import render
 
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
+    tb_writer = prepare_output_and_logger(dataset, args.sam3d_init)
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, extra_opts=args)
+    scene = Scene(dataset, gaussians, extra_opts=args, load_ply = args.ply_to_load) # NATE we pass in the sam3_init arg to Scene so it sets up GaussianModel as naturally as possible
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
-        gaussians.restore(model_params, opt)
+        gaussians.restore(model_params, opt)        
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -161,6 +162,7 @@ def training(args, dataset, opt, pipe, testing_iterations, saving_iterations, ch
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/ckpt" + str(iteration) + ".pth")
+                print(f'Saving here: {scene.model_path + "/ckpt" + str(iteration) + ".pth"}')
 
     if args.use_dust3r:
         with open(os.path.join(dataset.source_path, f'dust3r_{args.sparse_view_num}.json'), 'r') as f:
@@ -178,7 +180,7 @@ def training(args, dataset, opt, pipe, testing_iterations, saving_iterations, ch
         with open(os.path.join(scene.model_path, 'refined_cams.json'), 'w') as f:
             json.dump(refined_cameras, f, indent=4)
 
-def prepare_output_and_logger(args):
+def prepare_output_and_logger(args, seperate_log_name = None):
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
@@ -196,7 +198,10 @@ def prepare_output_and_logger(args):
     # Create Tensorboard writer
     tb_writer = None
     if TENSORBOARD_FOUND:
-        tb_writer = SummaryWriter(args.model_path)
+        if seperate_log_name:
+            tb_writer = SummaryWriter(f'{args.model_path}/sam3dinit')
+        else:
+            tb_writer = SummaryWriter(args.model_path)
     else:
         print("Tensorboard not available: not logging progress")
     return tb_writer
@@ -235,7 +240,10 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
         if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
+            if args.sam3d_init: # NATE apparently scene.gaussians.get_opacity returns an empty input so we can't record it...
+                pass
+            else:
+                tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
         torch.cuda.empty_cache()
 
 def cal_loss(opt, args, image, render_pkg, viewpoint_cam, bg, silhouette_loss_type="bce", mono_loss_type="mid", tb_writer: Optional[SummaryWriter]=None, iteration=0):
@@ -316,10 +324,10 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
+    parser.add_argument('--port', type=int, default=7007)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[100, 500, 1_000, 3_000, 7_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 15_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
@@ -339,8 +347,14 @@ if __name__ == "__main__":
     parser.add_argument('--mono_depth_weight', type=float, default=0.0005, help="The rate of monodepth loss")
     parser.add_argument('--lambda_t_norm', type=float, default=0.0005)
     parser.add_argument('--mono_loss_type', type=str, default="mid")
-
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
+    parser.add_argument('--sam3d_init', default=None, help = '.ply file containing gaussian splatting data from sam3d-objects (output[gs].save_ply)')
+    parser.add_argument('--ply_to_load', default=None, help = '.ply file containing gaussian splatting data from a previous run')
     args = parser.parse_args(sys.argv[1:])
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
     args.save_iterations.append(args.iterations)
     print("Optimizing " + args.model_path)
 

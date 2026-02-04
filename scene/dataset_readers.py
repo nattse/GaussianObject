@@ -232,7 +232,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, extra_opts=None):
         assert osp.exists(osp.join(path, f"sparse_{str(extra_opts.sparse_view_num)}.txt")), "sparse_id.txt not found!"
         ids = np.loadtxt(osp.join(path, f"sparse_{str(extra_opts.sparse_view_num)}.txt"), dtype=np.int32)
         ids_test = np.loadtxt(osp.join(path, f"sparse_test.txt"), dtype=np.int32)
-        test_cam_infos = [train_cam_infos[i] for i in ids_test]
+        test_cam_infos = [train_cam_infos[i] for i in ids_test] # If errors here, make sure you have more than one test image
         train_cam_infos = [train_cam_infos[i] for i in ids]
         print("Sparse view, only {} images are used for training, others are used for eval.".format(len(ids)))
     if hasattr(extra_opts, 'use_dust3r') and extra_opts.use_dust3r:

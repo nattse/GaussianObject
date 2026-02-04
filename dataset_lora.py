@@ -13,7 +13,7 @@ from gaussian_renderer import render
 from scene import GaussianModel
 from arguments import PipelineParams
 from scene.cameras import Camera
-from scene.colmap_loader import read_extrinsics_binary, read_intrinsics_binary, qvec2rotmat
+from scene.colmap_loader import read_extrinsics_binary, read_intrinsics_binary, qvec2rotmat, read_intrinsics_text, read_extrinsics_text
 from utils.graphics_utils import focal2fov, fov2focal
 
 
@@ -237,10 +237,16 @@ class GSCacheDataset(Dataset):
                     self.statistics_info.append(load_statistics_info(os.path.join(self.loo_dir, f'leave_{idx}', "diffs.pkl")))
 
         else:
-            cameras_extrinsic_file = os.path.join(self.data_dir, "sparse/0", "images.bin")
-            cameras_intrinsic_file = os.path.join(self.data_dir, "sparse/0", "cameras.bin")
-            cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
-            cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+            try: # NATE added this try/except loop
+                cameras_extrinsic_file = os.path.join(self.data_dir, "sparse/0", "images.bin")
+                cameras_intrinsic_file = os.path.join(self.data_dir, "sparse/0", "cameras.bin")
+                cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+                cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+            except:
+                cameras_extrinsic_file = os.path.join(self.data_dir, "sparse/0", "images.txt")
+                cameras_intrinsic_file = os.path.join(self.data_dir, "sparse/0", "cameras.txt")
+                cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+                cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
             cam_extrinsics_unsorted = list(cam_extrinsics.values())
             cam_extrinsics = sorted(cam_extrinsics_unsorted.copy(), key = lambda x : x.name)
 
@@ -270,7 +276,7 @@ class GSCacheDataset(Dataset):
                     image = Image.open(image_path)
                     image = np.array(image)
 
-                    mask_path = os.path.join(masks_folder, image_name + '.png')
+                    mask_path = os.path.join(masks_folder, image_name + '.png') # NATE .png to .jpg
                     mask = Image.open(mask_path)
                     mask = mask.resize((image.shape[1], image.shape[0]))
                     mask = np.array(mask)
@@ -286,7 +292,7 @@ class GSCacheDataset(Dataset):
 
                     if self.train:
                         noisy_paths = os.listdir(os.path.join(self.loo_dir, f'leave_{idx}', 'left_image'))
-                        its = sorted([int(path.replace('sample_', '').replace('.png', '')) for path in noisy_paths])
+                        its = sorted([int(path.replace('sample_', '').replace('.png', '')) for path in noisy_paths]) # NATE .png to .jpg
                         min_it = its[0]
                         noisys = [np.array(Image.open(os.path.join(self.loo_dir, f'leave_{idx}', 'left_image', f'sample_{it}.png'))) for it in its if it < min_it + self.cache_max_iter]
                         self.noisys.append(noisys)

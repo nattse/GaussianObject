@@ -159,7 +159,13 @@ if __name__=="__main__":
     parser.add_argument("--cube_size_shift_x", type=float, default=0.0, help="shift sizex of the cube in meters")
     parser.add_argument("--cube_size_shift_y", type=float, default=0.0, help="shift sizey of the cube in meters")
     parser.add_argument("--cube_size_shift_z", type=float, default=0.0, help="shift sizez of the cube in meters")
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
+
     args = parser.parse_args()
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 

@@ -135,7 +135,7 @@ class GaussianModel:
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda()) # NATE pcd.colors is just n x 3 and so is fused_color
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
@@ -509,3 +509,167 @@ class GaussianModel:
 
                 noise[torch.rand_like(getattr(self, attr)) < noise_dropout] = 0
                 setattr(self, attr, getattr(self, attr) + noise)
+    
+    def load_sam3_ply(self, file, requires_grad: bool = True):
+        """
+        Copying from sam3d_objects/model/backbone/tdfy_dit/representations/gaussian/gaussian_model.py
+        to load their splatting parameters into GO's format.
+        This is called from __init__.Scene
+        """
+        plydata = PlyData.read(file)
+
+        xyz = np.stack(
+            (
+                np.asarray(plydata.elements[0]["x"]),
+                np.asarray(plydata.elements[0]["y"]),
+                np.asarray(plydata.elements[0]["z"]),
+            ),
+            axis=1,
+        )
+        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+
+        features_dc = np.zeros((xyz.shape[0], 3, 1))
+        features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+        features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
+        features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+        self.sh_degree = self.active_sh_degree # NATE - I don't know what self.sh_degree's equivalent is here, but there seems to be no extra_f_names so we use current_SH which is 0
+        if self.sh_degree > 0:
+            extra_f_names = [
+                p.name
+                for p in plydata.elements[0].properties
+                if p.name.startswith("f_rest_")
+            ]
+            extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
+            assert len(extra_f_names) == 3 * (self.sh_degree + 1) ** 2 - 3
+            features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+            for idx, attr_name in enumerate(extra_f_names):
+                features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+            # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
+            features_extra = features_extra.reshape(
+                (features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1)
+            )
+
+        scale_names = [
+            p.name
+            for p in plydata.elements[0].properties
+            if p.name.startswith("scale_")
+        ]
+        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
+        scales = np.zeros((xyz.shape[0], len(scale_names)))
+        for idx, attr_name in enumerate(scale_names):
+            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+        rot_names = [
+            p.name for p in plydata.elements[0].properties if p.name.startswith("rot")
+        ]
+        rot_names = sorted(rot_names, key=lambda x: int(x.split("_")[-1]))
+        rots = np.zeros((xyz.shape[0], len(rot_names)))
+        for idx, attr_name in enumerate(rot_names):
+            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+        # convert to actual gaussian attributes
+        self.device = 'cuda' # NATE this is apparently never set in the original GO code so setting it here
+        xyz = torch.tensor(xyz, dtype=torch.float, device=self.device)
+        features_dc = (
+            torch.tensor(features_dc, dtype=torch.float, device=self.device)
+        )
+        if self.sh_degree > 0:
+            features_extra = (
+                torch.tensor(features_extra, dtype=torch.float, device=self.device)
+            )
+        opacities = torch.tensor(opacities, dtype=torch.float, device=self.device)
+        scales = torch.tensor(scales, dtype=torch.float, device=self.device)
+        rots = torch.tensor(rots, dtype=torch.float, device=self.device)
+
+        # convert to _hidden attributes
+        # NATE All the inverse opacity and inverse scaling things are apparently part of the training cycle anyways and are not used in load_ply here so we try leaving it out for now
+        #self._xyz = (xyz - self.aabb[None, :3]) / self.aabb[None, 3:]
+        self._xyz = xyz # NATE the above does not work because there is no self.aabb in the GO original code
+        self._features_dc = features_dc
+        if self.sh_degree > 0:
+            self._features_rest = features_extra
+        else:
+            dim0, dim1, dim2 = self._features_dc.shape # 160000, 3, 1 < Last value does not work since SAM-3d-obj apparently does not go through SH higher than 0 so saves no _features_rest
+            self._features_rest = torch.zeros([dim0, dim1, 0], dtype=torch.float, device=self.device) # So we manually create an empty tensor that fits what GO expects when loading from a .ply file
+        #self._opacity = self.inverse_opacity_activation(opacities) - self.opacity_bias # NATE like the aabb issue, self.opacity_bias never set (along with scale_bias and rots_bias)
+        self._opacity = opacities
+        #self._scaling = (self.inverse_scaling_activation(torch.sqrt(torch.square(scales) - self.mininum_kernel_size**2))- self.scale_bias)
+        self._scaling = scales
+        #self._rotation = rots - self.rots_bias[None, :]
+        self._rotation = rots
+
+        # Everything from here is copied from self.load_ply(), with some minor changes to fit how sam3d-object saved variables
+        #self._xyz = nn.Parameter(torch.tensor(self._xyz, dtype=torch.float, device="cuda").requires_grad_(requires_grad))
+        self._xyz = nn.Parameter(self._xyz.requires_grad_(requires_grad))
+        self._features_dc = nn.Parameter(self._features_dc.transpose(1, 2).contiguous().requires_grad_(requires_grad))
+        self._features_rest = nn.Parameter(self._features_rest.transpose(1, 2).contiguous().requires_grad_(requires_grad))
+        self._opacity = nn.Parameter(self._opacity.requires_grad_(requires_grad))
+        self._scaling = nn.Parameter(self._scaling.requires_grad_(requires_grad))
+        self._rotation = nn.Parameter(self._rotation.requires_grad_(requires_grad))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        #self.active_sh_degree = self.max_sh_degree
+        self.active_sh_degree = 0
+
+    def load_like_pcd(self, file, spatial_lr_scale : float):
+        plydata = PlyData.read(file)
+        self.spatial_lr_scale = spatial_lr_scale
+
+        # Commented out lines are followed by .ply equivalents
+        # fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
+        xyz = np.stack(
+            (
+                np.asarray(plydata.elements[0]["x"]),
+                np.asarray(plydata.elements[0]["y"]),
+                np.asarray(plydata.elements[0]["z"]),
+            ),
+            axis=1,
+        )
+
+        #fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda()) 
+        features_dc = np.zeros((xyz.shape[0], 3, 1))
+        features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+        features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
+        features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+
+        features = torch.zeros((features_dc.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+        features[:, :3, 0 ] = torch.tensor(features_dc)[:,:,0]
+        features[:, 3:, 1:] = 0.0
+
+        #dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(xyz).float().cuda()), 0.0000001)
+        #scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        scale_names = [
+            p.name
+            for p in plydata.elements[0].properties
+            if p.name.startswith("scale_")
+        ]
+        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
+        scales = np.zeros((xyz.shape[0], len(scale_names)))
+        for idx, attr_name in enumerate(scale_names):
+            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        scales = torch.tensor(scales, dtype=torch.float, device='cuda')
+
+        #rots = torch.zeros((xyz.shape[0], 4), device="cuda")
+        #rots[:, 0] = 1
+        rot_names = [
+            p.name for p in plydata.elements[0].properties if p.name.startswith("rot")
+        ]
+        rot_names = sorted(rot_names, key=lambda x: int(x.split("_")[-1]))
+        rots = np.zeros((xyz.shape[0], len(rot_names)))
+        for idx, attr_name in enumerate(rot_names):
+            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        rots = torch.tensor(rots, dtype=torch.float, device='cuda')
+
+        #opacities = inverse_sigmoid(0.1 * torch.ones((xyz.shape[0], 1), dtype=torch.float, device="cuda"))
+        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+        opacities = torch.tensor(opacities, dtype=torch.float, device='cuda')
+
+        self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device='cuda').requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+        self.active_sh_degree = self.max_sh_degree

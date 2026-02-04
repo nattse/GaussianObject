@@ -114,7 +114,14 @@ def load_raw_depth(fpath="raw.png"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--source-path', type=str, default=f'data/mip360/kitchen')
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
     args = parser.parse_args()
+
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
+        
     cur_dir = args.source_path
 
     zoe_model = init_model()

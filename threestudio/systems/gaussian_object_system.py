@@ -357,6 +357,17 @@ class GaussianDreamer(BaseLift3DSystem):
 
     def on_fit_start(self) -> None:
         super().on_fit_start()
+
+        # Start NATE block
+        #if not self.trainer.is_global_zero:  # avoid duplicated logging on other ranks
+        #    return
+        #dm = self.trainer.datamodule  
+        #loader = dm.train_dataloader()
+        #batch = next(iter(loader))
+        # move tensors to same device if needed, e.g. batch["image"] = batch["image"].to(self.device)
+        #self.logger.experiment.add_graph(self, batch)
+        # End NATE block
+        
         self.controlnet = create_model(f'models/{self.cfg.model_name}.yaml').cpu()
         self.controlnet.load_state_dict(load_state_dict('models/v1-5-pruned.ckpt', location='cuda'), strict=False)
         self.controlnet.load_state_dict(load_state_dict(f'models/{self.cfg.model_name}.pth', location='cuda'), strict=False)
@@ -407,6 +418,7 @@ class GaussianDreamer(BaseLift3DSystem):
         }
 
     def training_step(self, batch, batch_idx):
+        print(f'NATE: in GaussianDreamer')
         if self.max_cam_dis == 0.:
             Ts = batch['gt_Ts']
             self.all_T = torch.cat(Ts)

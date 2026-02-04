@@ -3,12 +3,17 @@ import argparse
 from PIL import Image
 from tqdm import tqdm
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-s', '--source-path', type=str, default='data/realcap/rabbit')
     parser.add_argument('--sparse_num', type=int, default=4)
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
+
     args = parser.parse_args()
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
 
     images_path = os.path.join(args.source_path, 'images')
 

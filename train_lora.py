@@ -45,8 +45,14 @@ if __name__ == '__main__':
     parser.add_argument('--add_control_lora', action='store_true', default=False)
     parser.add_argument('--add_clip_lora', action='store_true', default=False)
     parser.add_argument('--use_dust3r', action='store_true', default=False)
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
 
     args = parser.parse_args()
+
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
 
     model = create_model(f'./models/{args.model_name}.yaml').cpu()
     model.load_state_dict(load_state_dict('./models/v1-5-pruned.ckpt', location='cpu'), strict=False)
@@ -104,6 +110,7 @@ if __name__ == '__main__':
                     log_images_kwargs = {"plot_diffusion_rows": True, "sample": True}),
         LoraCheckpoint(exp_dir=exp_path, every_n_train_steps=args.callbacks_every_n_train_steps)
     ]
+    #breakpoint()
     trainer = pl.Trainer(
         accelerator='gpu',
         devices=1,

@@ -88,6 +88,11 @@ class Scene:
         if self.loaded_iter:
             load_name = "point_cloud.ply"
             self.gaussians.load_ply(os.path.join(self.model_path, "point_cloud", "iteration_" + str(self.loaded_iter), load_name))
+        #elif extra_opts.sam3d_init: # NATE
+        #    self.gaussians.load_sam3_ply(extra_opts.sam3d_init)
+        #    self.gaussians.spatial_lr_scale = self.cameras_extent # Copying from below
+        #   #self.gaussians.load_like_pcd(extra_opts.sam3d_init, self.cameras_extent)
+        #   #self.gaussians.save_ply(os.path.join(self.model_path, "input_from_sam3d.ply"))
         elif load_ply:
             self.gaussians.load_ply(load_ply)
             # in this case, we need it to be trainable, so we need to make sure the spatial_lr_scale is not 0
@@ -99,6 +104,11 @@ class Scene:
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+
+    def saveSpecial(self, iteration, savePath, logName, saveName):
+        point_cloud_path = os.path.join(savePath, logName, f'{saveName}_{iteration}.ply')
+        self.gaussians.save_ply(point_cloud_path)
+        print(f'Saved {self.model_path} point cloud to {point_cloud_path}')
 
     def getTrainCameras(self, scale=1.0):
         return self.train_cameras[scale]

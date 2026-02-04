@@ -26,6 +26,7 @@ from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianD
 from ldm.models.autoencoder import IdentityFirstStage, AutoencoderKL
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
+from torch.utils.tensorboard import SummaryWriter # NATE
 
 
 __conditioning_keys__ = {'concat': 'c_concat',
@@ -134,7 +135,7 @@ class DDPM(pl.LightningModule):
         self.ucg_training = ucg_training or dict()
         if self.ucg_training:
             self.ucg_prng = np.random.RandomState()
-
+    
     def register_schedule(self, given_betas=None, beta_schedule="linear", timesteps=1000,
                           linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
         if exists(given_betas):
@@ -580,6 +581,8 @@ class LatentDiffusion(DDPM):
             print(" +++++++++++ WARNING: RESETTING NUM_EMA UPDATES TO ZERO +++++++++++ ")
             assert self.use_ema
             self.model_ema.reset_num_updates()
+        self.writer = SummaryWriter('sample_images_dir') # NATE
+        self.bigStep = 0 # NATE
 
     def make_cond_schedule(self, ):
         self.cond_ids = torch.full(size=(self.num_timesteps,), fill_value=self.num_timesteps - 1, dtype=torch.long)
@@ -837,6 +840,12 @@ class LatentDiffusion(DDPM):
         return loss
 
     def forward(self, x, c, *args, **kwargs):
+        #print(f'\n\nThis is the x the diffuser sees: {x.shape}\n\n') # NATE
+        #print(f'This is type for x: {type(x)}') # NATE
+        #print(f'This is x shape: {x.shape}') # NATE
+        img_grid = make_grid(x) # NATE
+        self.writer.add_image('sample_images', img_grid, self.bigStep) # NATE
+        self.bigStep += 1
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         if self.model.conditioning_key is not None:
             assert c is not None

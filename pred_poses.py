@@ -146,6 +146,11 @@ if __name__ == "__main__":
     original_images = [Image.open(image) for image in images]
     masks = sorted(os.listdir(os.path.join(scene_path, 'masks')))
     masks = [os.path.join(scene_path, 'masks', masks[id]) for id in ids]
+    #print(type(original_images))
+    #print(type(original_images[0]))
+    #print(f'image shape: {original_images[0].size}') # NATE
+    #arr = np.array(Image.open(masks[0]).resize(original_images[0].size))
+    #print(f'mask shape: {arr.shape}') # NATE
     original_masks = [np.array(Image.open(mask).resize(image.size))[:, :, 0] / 255.0 for mask, image in zip(masks, original_images)]
 
     loaded_images = load_images(images, size=512)
@@ -172,6 +177,7 @@ if __name__ == "__main__":
         used_verts.add(j)
         used_verts.add(k)
     used_verts = np.array(list(used_verts))
+    #print(used_verts.shape) # NATE
 
     vertices =  meshes['vertices'][used_verts]
     colors = meshes['vertice_colors'][used_verts]

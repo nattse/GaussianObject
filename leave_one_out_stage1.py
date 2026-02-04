@@ -315,8 +315,13 @@ if __name__ == "__main__":
     parser.add_argument("--init_pcd_name", default='origin', type=str, help="the init pcd name. 'random' for random, 'origin' for pcd from the whole scene")
     parser.add_argument('--mono_depth_weight', type=float, default=0.0005, help="The rate of monodepth loss")
     parser.add_argument('--mono_loss_type', type=str, default="mid")
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
 
     args = parser.parse_args(sys.argv[1:])
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
     args.save_iterations.append(args.iterations)
 
     assert args.sparse_view_num > 0, 'leave_one_out is for sparse view training'

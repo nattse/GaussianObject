@@ -15,7 +15,7 @@ import threestudio
 from threestudio import register
 from threestudio.utils.config import parse_structured
 from threestudio.utils.typing import *
-from scene.colmap_loader import read_extrinsics_binary, read_intrinsics_binary, qvec2rotmat, rotmat2qvec
+from scene.colmap_loader import read_extrinsics_binary, read_intrinsics_binary, qvec2rotmat, rotmat2qvec, read_extrinsics_text, read_intrinsics_text
 from utils.camera_utils import resize_mask_image, load_raw_depth
 from utils.graphics_utils import getWorld2View2, focal2fov
 from .random_camera_sampler import RandomCameraSampler
@@ -168,10 +168,17 @@ class LooDataset(Dataset):
                 self.fovys.append(FovY)
 
         else:
-            cameras_extrinsic_file = os.path.join(self.data_dir, "sparse/0", "images.bin")
-            cameras_intrinsic_file = os.path.join(self.data_dir, "sparse/0", "cameras.bin")
-            cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
-            cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+            try: # NATE added this try/except loop
+                cameras_extrinsic_file = os.path.join(self.data_dir, "sparse/0", "images.bin")
+                cameras_intrinsic_file = os.path.join(self.data_dir, "sparse/0", "cameras.bin")
+                cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+                cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+            except:
+                cameras_extrinsic_file = os.path.join(self.data_dir, "sparse/0", "images.txt")
+                cameras_intrinsic_file = os.path.join(self.data_dir, "sparse/0", "cameras.txt")
+                cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+                cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+
             cam_extrinsics_unsorted = list(cam_extrinsics.values())
             cam_extrinsics = sorted(cam_extrinsics_unsorted.copy(), key = lambda x : x.name)
 

@@ -1,0 +1,435 @@
+#
+# Copyright (C) 2023, Inria
+# GRAPHDECO research group, https://team.inria.fr/graphdeco
+# All rights reserved.
+#
+# This software is free for non-commercial, research and evaluation use 
+# under the terms of the LICENSE.md file.
+#
+# For inquiries contact  george.drettakis@inria.fr
+#
+
+import os
+import sys
+import uuid
+import json
+import math
+from argparse import ArgumentParser, Namespace
+from random import randint
+from typing import Optional
+
+import torch
+import numpy as np
+import torch.nn.functional as F
+from tqdm import tqdm
+from torchmetrics.functional.regression import pearson_corrcoef
+from arguments import ModelParams, OptimizationParams, PipelineParams
+from gaussian_renderer import network_gui
+from scene import GaussianModel, Scene
+from utils.general_utils import safe_state
+from utils.image_utils import psnr
+from utils.loss_utils import l1_loss, ssim, monodisp
+from utils.pose_utils import update_pose, get_loss_tracking
+from torch.utils.tensorboard.writer import SummaryWriter
+from gaussian_renderer import render
+import pytorch3d.ops as p3dops
+
+TENSORBOARD_FOUND = True
+
+def _sample_gaussians_for_temporal(gaussians, max_points):
+    xyz = gaussians.get_xyz
+    if xyz.numel() == 0:
+        return xyz, xyz.new_empty((0, 7))
+    if max_points > 0 and xyz.shape[0] > max_points:
+        idx = torch.randperm(xyz.shape[0], device=xyz.device)[:max_points]
+        xyz = xyz[idx]
+        scaling = gaussians.get_scaling[idx]
+        opacity = gaussians.get_opacity[idx]
+    else:
+        scaling = gaussians.get_scaling
+        opacity = gaussians.get_opacity
+    features = torch.cat([xyz, scaling, opacity], dim=1)
+    return xyz, features
+
+def _temporal_pair_loss(gaussians_a, gaussians_b, max_points):
+    xyz_a, feat_a = _sample_gaussians_for_temporal(gaussians_a, max_points)
+    xyz_b, feat_b = _sample_gaussians_for_temporal(gaussians_b, max_points)
+    if xyz_a.numel() == 0 or xyz_b.numel() == 0:
+        return xyz_a.new_tensor(0.0)
+
+    knn_ab = p3dops.knn_points(xyz_a[None], xyz_b[None], K=1)
+    idx_ab = knn_ab.idx.squeeze(0).squeeze(-1)
+    feat_b_match = feat_b[idx_ab]
+    loss_ab = torch.mean(torch.abs(feat_a - feat_b_match))
+
+    knn_ba = p3dops.knn_points(xyz_b[None], xyz_a[None], K=1)
+    idx_ba = knn_ba.idx.squeeze(0).squeeze(-1)
+    feat_a_match = feat_a[idx_ba]
+    loss_ba = torch.mean(torch.abs(feat_b - feat_a_match))
+
+    return 0.5 * (loss_ab + loss_ba)
+
+def temporal_consistency_loss(gaussians_list, temporal_tau, max_offset, sample_size):
+    if len(gaussians_list) < 2:
+        return gaussians_list[0].get_xyz.new_tensor(0.0)
+    loss = gaussians_list[0].get_xyz.new_tensor(0.0)
+    pair_count = 0
+    for i in range(len(gaussians_list)):
+        for j in range(i + 1, len(gaussians_list)):
+            dt = j - i
+            if max_offset > 0 and dt > max_offset:
+                continue
+            weight = math.exp(-dt / temporal_tau) if temporal_tau > 0 else 1.0
+            loss = loss + weight * _temporal_pair_loss(gaussians_list[i], gaussians_list[j], sample_size)
+            pair_count += 1
+    if pair_count == 0:
+        return loss
+    return loss / pair_count
+
+def training(args, datasets, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, groupSave = './output/multiframe'):
+    """
+    Docstring for training
+    
+    :param args: Description
+    :param datasets: List of GroupParams from ModelParams
+    :param opt: Description
+    :param pipe: Description
+    :param testing_iterations: Description
+    :param saving_iterations: Description
+    :param checkpoint_iterations: Description
+    :param checkpoint: Description
+    :param debug_from: Description
+    :param groupSave: Where logs and .ply outputs from this multi-frame run will be stored
+    """
+    first_iter = 0
+    tb_writer = prepare_output_and_logger(datasets, groupSave, args.log_name)
+    frameData = []
+    for dataset in datasets:
+        gaussians = GaussianModel(dataset.sh_degree)
+        scene = Scene(dataset, gaussians, extra_opts=args, load_ply = args.ply_to_load) # NATE we pass in the sam3_init arg to Scene so it sets up GaussianModel as naturally as possible
+        gaussians.training_setup(opt)
+        if checkpoint:
+            (model_params, first_iter) = torch.load(checkpoint)
+            gaussians.restore(model_params, opt)     
+        frameData.append((gaussians, scene))   
+
+    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+
+    iter_start = torch.cuda.Event(enable_timing = True)
+    iter_end = torch.cuda.Event(enable_timing = True)
+
+    viewpoint_stack, augview_stack = None, None
+    ema_loss_for_log = 0.0
+    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+    first_iter += 1
+    for iteration in range(first_iter, opt.iterations + 1):  
+
+        # Pick a random Camera by index, used for all frames
+        if not viewpoint_stack:
+            _, tempScene = frameData[0]
+            viewpoint_stack = tempScene.getTrainCameras().copy()
+        camIndex = randint(0, len(viewpoint_stack)-1)
+
+        if len(frameData) > 1 and args.temporal_weight > 0:
+            temporal_loss = temporal_consistency_loss(
+                [gaussians for gaussians, _ in frameData],
+                args.temporal_tau,
+                args.temporal_max_offset,
+                args.temporal_sample,
+            )
+            temporal_loss_scaled = args.temporal_weight * temporal_loss
+            temporal_loss_scaled.backward()
+            if tb_writer:
+                tb_writer.add_scalar('loss/temporal_smoothness', temporal_loss.item(), iteration)
+
+        for scenesProcessed, (gaussians, scene) in enumerate(frameData):
+            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_cam = viewpoint_stack.pop(camIndex)
+            
+            if iteration <= 10 or iteration % 10 == 0:
+                if network_gui.conn == None:
+                    network_gui.try_connect()
+                while network_gui.conn != None:
+                    try:
+                        net_image_bytes = None
+                        custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
+                        if custom_cam != None:
+                            net_image = render(custom_cam, gaussians, pipe, background, scaling_modifer)["render"]
+                            net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
+                        network_gui.send(net_image_bytes, dataset.source_path)
+                        if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
+                            break
+                    except Exception as e:
+                        network_gui.conn = None
+
+            iter_start.record() # type: ignore
+            gaussians.update_learning_rate(iteration)
+
+            # Every 1000 its we increase the levels of SH up to a maximum degree
+            if iteration % 1000 == 0:
+                gaussians.oneupSHdegree()
+
+            # Render
+            if (iteration - 1) == debug_from:
+                pipe.debug = True
+
+            bg = torch.rand((3), device="cuda") if opt.random_background else background
+
+            render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], \
+                render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+            # Loss
+            loss, Ll1 = cal_loss(opt, args, image, render_pkg, viewpoint_cam, bg, tb_writer=tb_writer, iteration=iteration, mono_loss_type=args.mono_loss_type, datasetName = os.path.basename(scene.model_path))
+
+            loss.backward()
+            iter_end.record()  # type: ignore
+
+            with torch.no_grad():
+                # Progress bar
+                ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+                num_gauss = len(gaussians._xyz)
+                if iteration % 10 == 0 and scenesProcessed == len(frameData) - 1:
+                    progress_bar.set_postfix({'Loss': f"{ema_loss_for_log:.{7}f}",  'n': f"{num_gauss}"})
+                    progress_bar.update(10)
+                if iteration == opt.iterations:
+                    progress_bar.close()
+
+                # Log and save
+                training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+                if (iteration in saving_iterations):
+                    print("\n[ITER {}] Saving Gaussians".format(iteration))
+                    saveName = os.path.basename(scene.model_path)
+                    scene.saveSpecial(iteration, groupSave, args.log_name, saveName) # NATE saving all dataset point clouds to the same place for easy processing
+
+                # Densification
+                if iteration < opt.densify_until_iter and num_gauss < opt.max_num_splats:
+                    # Keep track of max radii in image-space for pruning
+                    gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                    gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+
+                    if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                        size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                        gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    
+                    if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                        gaussians.reset_opacity()
+
+                    if iteration % opt.remove_outliers_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                        gaussians.remove_outliers(opt, iteration, linear=True)
+
+                # Optimizer step
+                if iteration < opt.iterations:
+                    gaussians.optimizer.step()
+                    gaussians.optimizer.zero_grad(set_to_none = True)
+                    
+                if (iteration in checkpoint_iterations):
+                    print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                    torch.save((gaussians.capture(), iteration), scene.model_path + "/ckpt" + str(iteration) + ".pth")
+                    print(f'Saving here: {scene.model_path + "/ckpt" + str(iteration) + ".pth"}')
+
+def prepare_output_and_logger(datasets, outputPath, logName = None):
+    # Set up output folder
+    print("Output folder: {}".format(outputPath))
+    os.makedirs(outputPath, exist_ok = True)
+    with open(os.path.join(outputPath, "cfg_args"), 'w') as cfg_log_f:
+        for dataset in datasets:
+            cfg_log_f.write(str(Namespace(**vars(dataset))))
+
+    # Create Tensorboard writer
+    tb_writer = None
+    if TENSORBOARD_FOUND:
+        tb_writer = SummaryWriter(f'{outputPath}/{logName}')
+    else:
+        print("Tensorboard not available: not logging progress")
+    return tb_writer
+
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+    datasetName = os.path.basename(scene.model_path)
+    if tb_writer:
+        tb_writer.add_scalar(f'train_loss_patches/l1_loss/{datasetName}', Ll1.item(), iteration)
+        tb_writer.add_scalar(f'train_loss_patches/total_loss/{datasetName}', loss.item(), iteration)
+        tb_writer.add_scalar(f'iter_time/{datasetName}', elapsed, iteration)
+        tb_writer.add_scalar(f'total_points/{datasetName}', scene.gaussians.get_xyz.shape[0], iteration)
+
+    # Report test and samples of training set
+    if iteration in testing_iterations:
+        torch.cuda.empty_cache()
+        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
+                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+
+        for config in validation_configs:
+            if config['cameras'] and len(config['cameras']) > 0:
+                l1_test = 0.0
+                psnr_test = 0.0
+                for idx, viewpoint in enumerate(config['cameras']):
+                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    if tb_writer and (idx < 5): # in these lines, config['name'] == 'test'
+                        tb_writer.add_images(config['name'] + f"_view_{viewpoint.image_name}/render/{datasetName}", image[None], global_step=iteration)
+                        if iteration == testing_iterations[0]:
+                            tb_writer.add_images(config['name'] + f"_view_{viewpoint.image_name}/ground_truth/{datasetName}", gt_image[None], global_step=iteration)
+                    l1_test += l1_loss(image, gt_image).mean().double()
+                    psnr_test += psnr(image, gt_image).mean().double()
+                psnr_test /= len(config['cameras'])
+                l1_test /= len(config['cameras'])          
+                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                if tb_writer:
+                    tb_writer.add_scalar(config['name'] + f'/loss_viewpoint - l1_loss/{datasetName}', l1_test, iteration)
+                    tb_writer.add_scalar(config['name'] + f'/loss_viewpoint - psnr/{datasetName}', psnr_test, iteration)
+
+        if tb_writer:
+            tb_writer.add_histogram(f"scene/opacity_histogram/{datasetName}", scene.gaussians.get_opacity, iteration)
+        torch.cuda.empty_cache()
+
+def cal_loss(opt, args, image, render_pkg, viewpoint_cam, bg, silhouette_loss_type="bce", mono_loss_type="mid", tb_writer: Optional[SummaryWriter]=None, iteration=0, datasetName = None):
+    """
+    Calculate the loss of the image, contains l1 loss and ssim loss.
+    l1 loss: Ll1 = l1_loss(image, gt_image)
+    ssim loss: Lssim = 1 - ssim(image, gt_image)
+    Optional: [silhouette loss, monodepth loss]
+    datasetName : used to distinguish frame-specific loss in tensorboard 
+    """
+    gt_image = viewpoint_cam.original_image.to(image.dtype).cuda()
+    if opt.random_background:
+        gt_image = gt_image * viewpoint_cam.mask + bg[:, None, None] * (1 - viewpoint_cam.mask).squeeze()
+    Ll1 = l1_loss(image, gt_image)
+    Lssim = (1.0 - ssim(image, gt_image))
+    loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
+    if tb_writer is not None:
+        tb_writer.add_scalar(f'loss/l1_loss/{datasetName}', Ll1, iteration)
+        tb_writer.add_scalar(f'loss/ssim_loss/{datasetName}', Lssim, iteration)
+
+    if hasattr(args, "use_mask") and args.use_mask:
+        if silhouette_loss_type == "bce":
+            silhouette_loss = F.binary_cross_entropy(render_pkg["rendered_alpha"], viewpoint_cam.mask)
+        elif silhouette_loss_type == "mse":
+            silhouette_loss = F.mse_loss(render_pkg["rendered_alpha"], viewpoint_cam.mask)
+        else:
+            raise NotImplementedError
+        loss = loss + opt.lambda_silhouette * silhouette_loss
+        if tb_writer is not None:
+            tb_writer.add_scalar(f'loss/silhouette_loss/{datasetName}', silhouette_loss, iteration)
+
+    if hasattr(viewpoint_cam, "mono_depth") and viewpoint_cam.mono_depth is not None:
+        if mono_loss_type == "mid":
+            # we apply masked monocular loss
+            gt_mask = torch.where(viewpoint_cam.mask > 0.5, True, False)
+            render_mask = torch.where(render_pkg["rendered_alpha"] > 0.5, True, False)
+            mask = torch.logical_and(gt_mask, render_mask)
+            if mask.sum() < 10:
+                depth_loss = 0.0
+            else:
+                disp_mono = 1 / viewpoint_cam.mono_depth[mask].clamp(1e-6) # shape: [N]
+                disp_render = 1 / render_pkg["rendered_depth"][mask].clamp(1e-6) # shape: [N]
+                depth_loss = monodisp(disp_mono, disp_render, 'l1')[-1]
+        elif mono_loss_type == "pearson":
+            disp_mono = 1 / viewpoint_cam.mono_depth[viewpoint_cam.mask > 0.5].clamp(1e-6) # shape: [N]
+            disp_render = 1 / render_pkg["rendered_depth"][viewpoint_cam.mask > 0.5].clamp(1e-6) # shape: [N]
+            depth_loss = (1 - pearson_corrcoef(disp_render, -disp_mono)).mean()
+        elif mono_loss_type == "dust3r":
+            gt_mask = torch.where(viewpoint_cam.mask > 0.5, True, False)
+            render_mask = torch.where(render_pkg["rendered_alpha"] > 0.5, True, False)
+            mask = torch.logical_and(gt_mask, render_mask)
+            if mask.sum() < 10:
+                depth_loss = 0.0
+            else:
+                disp_mono = 1 / viewpoint_cam.mono_depth[mask].clamp(1e-6) # shape: [N]
+                disp_render = 1 / render_pkg["rendered_depth"][mask].clamp(1e-6) # shape: [N]
+                depth_loss = torch.abs((disp_render - disp_mono)).mean()
+            depth_loss *= (opt.iterations - iteration) / opt.iterations # linear scheduler
+        else:
+            raise NotImplementedError
+
+        loss = loss + args.mono_depth_weight * depth_loss
+        if tb_writer is not None:
+            tb_writer.add_scalar(f'loss/depth_loss/{datasetName}', depth_loss, iteration)
+
+    return loss, Ll1
+
+if __name__ == "__main__":
+    # Set up command line argument parser
+    parser = ArgumentParser(description="Training script parameters")
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
+    parser.add_argument('--ip', type=str, default="127.0.0.1")
+    parser.add_argument('--port', type=int, default=7007)
+    parser.add_argument('--debug_from', type=int, default=-1)
+    parser.add_argument('--detect_anomaly', action='store_true', default=False)
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[100, 1_000, 7_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 15_000])
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--start_checkpoint", type=str, default = None)
+    ### some exp args
+    parser.add_argument("--sparse_view_num", type=int, default=-1, 
+                        help="Use sparse view or dense view, if sparse_view_num > 0, use sparse view, \
+                        else use dense view. In sparse setting, sparse views will be used as training data, \
+                        others will be used as testing data.")
+    parser.add_argument("--use_mask", default=True, help="Use masked image, by default True")
+    parser.add_argument('--use_dust3r', action='store_true', default=False,
+                        help='use dust3r estimated poses')
+    parser.add_argument('--dust3r_json', type=str, default=None)
+    parser.add_argument("--init_pcd_name", default='origin', type=str, 
+                        help="the init pcd name. 'random' for random, 'origin' for pcd from the whole scene")
+    parser.add_argument("--transform_the_world", action="store_true", help="Transform the world to the origin")
+    parser.add_argument('--mono_depth_weight', type=float, default=0.0005, help="The rate of monodepth loss")
+    parser.add_argument('--lambda_t_norm', type=float, default=0.0005)
+    parser.add_argument('--mono_loss_type', type=str, default="mid")
+    parser.add_argument('--natedebug', action='store_true', help='activate vscode debugger')
+    parser.add_argument('--sam3d_init', default=None, help = '.ply file containing gaussian splatting data from sam3d-objects (output[gs].save_ply)')
+    parser.add_argument('--ply_to_load', default=None, help = '.ply file containing gaussian splatting data from a previous run')
+    #parser.add_argument('--frame_sequence', default=[], nargs="+", type=str, help = 'A space-seperated list of folder names found in the same location as the source (-s) path, which will be loaded for combined loss calculation')
+    parser.add_argument('--frame_sequence', default=[], nargs="+", type=str, help = 'Input three values; first is the shared naming scheme, the second and third are the start and stop values for the range of frames to include.'\
+                        'e.g. to process customRun-frame121 through customRun-frame129, input should be [customRun-frame 121 129] (omitting brackets)')
+    parser.add_argument('--log_name', help='This is the name Tensorboard will save under')
+    parser.add_argument('--temporal_weight', type=float, default=1.0, help='Weight for temporal smoothness across frames')
+    parser.add_argument('--temporal_tau', type=float, default=5.0, help='Exponential decay in frame distance for temporal loss')
+    parser.add_argument('--temporal_max_offset', type=int, default=2, help='Only compare frames within this index distance; <=0 compares all')
+    parser.add_argument('--temporal_sample', type=int, default=2048, help='Max gaussians sampled per frame for temporal loss')
+
+    args = parser.parse_args(sys.argv[1:])
+    if args.natedebug:
+        import debugpy
+        debugpy.listen(5678)
+        debugpy.wait_for_client() 
+
+    if len(args.frame_sequence) > 0:
+        import copy
+        import re
+        namePattern, start, stop = args.frame_sequence
+        datasets = []
+        initDataset = lp.extract(args)
+        datasets.append(initDataset)
+        sourceRoot = os.path.split(args.source_path)[0]
+        modelRoot = os.path.split(args.model_path)[0]
+        sourceDirs = [i for i in os.listdir(sourceRoot) if re.fullmatch(f'{namePattern}(\d+)', i)] # Search for data folders following the naming scheme
+        frames = [] # Frames to be included in this temporal chunk
+        for sourceDir in sourceDirs:
+            frameNum = int(sourceDir.removeprefix(namePattern))
+            if frameNum > int(start) and frameNum < int(stop):
+                frames.append(sourceDir)
+        frames = sorted(frames, key=lambda x: int(x.removeprefix(namePattern)))
+        for frame in frames:
+            nextDataset = copy.copy(initDataset)
+            nextDataset.source_path = os.path.join(sourceRoot, frame)
+            nextDataset.model_path = os.path.join(modelRoot, frame)
+            datasets.append(nextDataset)
+    # NATE : now, can I call training with this datasets list or do I need to do some similar parsing for the other parameters?
+
+    args.save_iterations.append(args.iterations)
+    print("Optimizing " + args.model_path)
+
+    # Initialize system state (RNG)
+    safe_state(args.quiet)
+
+    # Start GUI server, configure and run training
+    network_gui.init(args.ip, args.port)
+    torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    training(args, datasets, op.extract(args), pp.extract(args), args.test_iterations, 
+             args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+
+    # All done
+    print("\nTraining complete.")
