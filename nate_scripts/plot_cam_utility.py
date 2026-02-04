@@ -1,4 +1,7 @@
 import matplotlib.pyplot as plt
+import os
+
+rootDir = '/home/leelab/Desktop/GaussianObject'
 
 def plot_cam(cams, arrow_len=1.0):
     fig = plt.figure()
@@ -28,7 +31,8 @@ def plot_cam(cams, arrow_len=1.0):
     ax.view_init(elev = 0, azim=90)
     ax.legend()
     plt.tight_layout()
-    fig.savefig('cam_loc_and_view.jpg')
+
+    fig.savefig(os.path.join(rootDir, 'cam_loc_and_view.jpg'))
 
 allcams = tempScene.getAllCameras().copy()
 allcams.append(custom_cam)

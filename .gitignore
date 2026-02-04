@@ -7,7 +7,7 @@ dist
 __pycache__
 data/*
 .cache
-logs
+logs/*
 
 
 v1-5-pruned.ckpt
